@@ -143,7 +143,7 @@ claude mcp add -s user newhost-fleet -- ssh newhost python3 -u ~/server.py
 # ④ [主机] 重启 CC，调 newhost-fleet 的 system_info 验证
 ```
 
-新增第 2、3、…、N 台流程完全一样——这就是「无限」的由来：**框架对你的机器数量没有任何假设**。
+新增第 2、3、…、N 台流程完全一样——这就是「无限」的由来：**框架对你的机器数量没有任何限制**。
 
 ---
 
