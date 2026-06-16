@@ -36,7 +36,7 @@ Each link is its own SSH tunnel — independent and concurrent. The same `server
 
 ## 🚀 Install: you only do the setup once
 
-Worked example: "Host + one sub `myhost`". Fully general — repeat for as many subs as you like. **Every command is tagged with where it runs: `[Host]` or `[Sub]`.**
+Worked example: "Host + one sub `myhost`". Fully general — repeat for as many subs as you like.
 
 ### 1. SSH trust (Host → Sub)
 
