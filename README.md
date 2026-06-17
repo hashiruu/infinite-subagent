@@ -126,11 +126,14 @@ myhost-fleet — system_info
 
 仓库：[github.com/hashiruu/infinite-subagent](https://github.com/hashiruu/infinite-subagent)
 
-有新版时，一行命令同步到子机：
+有新版时：
 
 ```bash
-# 下载最新 server.py 推到子机，覆盖旧版即可
-scp server.py myhost:~/
+# [主机] 拉取最新版
+git clone https://github.com/hashiruu/infinite-subagent.git /tmp/infinite-subagent
+
+# [主机] 推到子机，覆盖旧版
+scp /tmp/infinite-subagent/server.py myhost:~/
 ```
 
 然后在主机 `/mcp` 重连即生效。全部子机都一样。

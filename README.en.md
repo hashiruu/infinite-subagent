@@ -128,11 +128,14 @@ If it returns the sub's system info, you're connected.
 
 Repo: [github.com/hashiruu/infinite-subagent](https://github.com/hashiruu/infinite-subagent)
 
-When there's a new version, one command syncs it to any sub:
+When there's a new version:
 
 ```bash
-# download the latest server.py and push it to the sub
-scp server.py myhost:~/
+# [Host] pull the latest
+git clone https://github.com/hashiruu/infinite-subagent.git /tmp/infinite-subagent
+
+# [Host] push it to the sub, overwriting the old copy
+scp /tmp/infinite-subagent/server.py myhost:~/
 ```
 
 Then `/mcp` reconnect on the host. Same for every sub.
