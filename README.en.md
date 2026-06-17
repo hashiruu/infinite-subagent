@@ -124,6 +124,21 @@ If it returns the sub's system info, you're connected.
 
 ---
 
+## 🔄 Update to the latest
+
+Repo: [github.com/hashiruu/infinite-subagent](https://github.com/hashiruu/infinite-subagent)
+
+When there's a new version, one command syncs it to any sub:
+
+```bash
+# download the latest server.py and push it to the sub
+scp server.py myhost:~/
+```
+
+Then `/mcp` reconnect on the host. Same for every sub.
+
+---
+
 ## ➕ Add a new sub
 
 A purely **host-side** operation — existing subs are untouched. Same tagging:
@@ -250,7 +265,7 @@ sequenceDiagram
   SRV-->>CC: running / done / error
   Note over CC: host is free to do other work meanwhile
   CC->>SRV: task_result(task_id) ← fetch full output
-  SRV-->>CC: on-disk output (readable after reconnect)
+  SRV-->>CC: stored output (readable after reconnect)
 ```
 
 **Usage**: for any job that might run long, call `task_start(agent="claude"|"codex", prompt=...)` instead of `claude_analyze`/`codex_execute`. Take the `task_id`, do other things, poll `task_status` until `done`, then fetch with `task_result`.
@@ -287,7 +302,7 @@ MIT. It's one file — do whatever.
 ## 📋 Changelog
 
 ### v1.1.0 — 2026-06-17
-- **New: async task model** — `task_start` / `task_status` / `task_result` / `task_list`: long jobs run in the background without blocking the caller; output is persisted to disk so it survives disconnects.
+- **New: async task model** — `task_start` / `task_status` / `task_result` / `task_list`: long jobs run in the background without blocking the caller; output is stored so it survives disconnects.
 - Security: `setsid` process group (timeout watchdog kills the whole group), 0600 env file (secrets never hit `ps` argv), `exit_code` file as the trusted completion signal.
 - Synchronous `claude_analyze` / `codex_execute` kept for short tasks.
 

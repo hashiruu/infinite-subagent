@@ -122,6 +122,21 @@ myhost-fleet — system_info
 
 ---
 
+## 🔄 更新：同步到最新版
+
+仓库：[github.com/hashiruu/infinite-subagent](https://github.com/hashiruu/infinite-subagent)
+
+有新版时，一行命令同步到子机：
+
+```bash
+# 下载最新 server.py 推到子机，覆盖旧版即可
+scp server.py myhost:~/
+```
+
+然后在主机 `/mcp` 重连即生效。全部子机都一样。
+
+---
+
 ## ➕ 如何新增一台子机
 
 纯**主机**操作，已有子机不受影响。每条同样标位置：
@@ -243,12 +258,12 @@ sequenceDiagram
   participant AI as claude / codex
   CC->>SRV: task_start(agent, prompt)
   SRV-->>CC: 立即返回 task_id（不阻塞）
-  Note over SRV,AI: setsid 后台运行，输出落盘到 /tmp/infinite-subagent-tasks/
+  Note over SRV,AI: setsid 后台运行，输出留存到 /tmp/infinite-subagent-tasks/
   CC->>SRV: task_status(task_id) ← 轮询，秒回
   SRV-->>CC: running / done / error
   Note over CC: 这期间主机可自由做别的事
   CC->>SRV: task_result(task_id) ← 取完整输出
-  SRV-->>CC: 落盘的输出（断线重连后仍可读）
+  SRV-->>CC: 留存的输出（断线重连后仍可读）
 ```
 
 **怎么用**：任何可能跑久的任务，用 `task_start(agent="claude"|"codex", prompt=...)` 替代 `claude_analyze`/`codex_execute`，拿到 `task_id` 后去忙别的，回头 `task_status` 轮询到 `done`，再 `task_result` 取结果。
@@ -285,7 +300,7 @@ MIT。一个文件，随便用。
 ## 📋 更新日志
 
 ### v1.1.0 — 2026-06-17
-- **新增异步任务模型**：`task_start` / `task_status` / `task_result` / `task_list`——长任务后台运行不阻塞调用方，输出落盘支持断线续跑
+- **新增异步任务模型**：`task_start` / `task_status` / `task_result` / `task_list`——长任务后台运行不阻塞调用方，输出留存支持断线续跑
 - 安全：`setsid` 进程组（超时 watchdog 杀整组）、0600 env 文件（密钥不入 `ps` argv）、`exit_code` 文件做可信完成检测
 - 同步 `claude_analyze` / `codex_execute` 保留作短任务
 
