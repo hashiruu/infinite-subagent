@@ -3,7 +3,9 @@
 > Turn any number of remote servers into subagents for your local Claude Code.
 > **One Python file. SSH-tunneled MCP. No ports, no HTTP server, no extra network config.**
 
-**[中文](./README.md)** · [Architecture](#-overall-architecture) · [Install](#-install-you-only-do-the-setup-once) · [Add a sub](#-add-a-new-sub) · [How it works](#️-how-it-works) · [Security](#-security)
+**[中文](./README.md)** · [Architecture](#-overall-architecture) · [Install](#-install-you-only-do-the-setup-once) · [Add a sub](#-add-a-new-sub) · [How it works](#️-how-it-works) · [Security](#-security) · [Changelog](#-changelog)
+
+**v1.1.0** · 2026-06-17
 
 **Terminology** (every command below is tagged with where it runs):
 
@@ -279,3 +281,15 @@ sequenceDiagram
 ## 📄 License
 
 MIT. It's one file — do whatever.
+
+---
+
+## 📋 Changelog
+
+### v1.1.0 — 2026-06-17
+- **New: async task model** — `task_start` / `task_status` / `task_result` / `task_list`: long jobs run in the background without blocking the caller; output is persisted to disk so it survives disconnects.
+- Security: `setsid` process group (timeout watchdog kills the whole group), 0600 env file (secrets never hit `ps` argv), `exit_code` file as the trusted completion signal.
+- Synchronous `claude_analyze` / `codex_execute` kept for short tasks.
+
+### v1.0.0
+- Initial release: single-file SSH-tunneled MCP, system tools + claude/codex subagents, zero ports, zero HTTP.
