@@ -218,8 +218,44 @@ Every sub exposes these **system tools**; on top of that it exposes **AI subagen
 | `check_service` | `name` | systemd service status |
 | `restart_service` | `name` | Restart a systemd service |
 | `docker_status` | — | Docker container status (if docker present) |
-| `claude_analyze` | `prompt`, `workdir?` | **remote Claude Code subagent** (if claude present) |
-| `codex_execute` | `task`, `workdir?` | **remote Codex subagent** (if codex present) |
+| `claude_analyze` | `prompt`, `workdir?` | remote Claude Code subagent · **sync** (if claude present) |
+| `codex_execute` | `task`, `workdir?` | remote Codex subagent · **sync** (if codex present) |
+| `task_start` | `agent`, `prompt`, `workdir?`, `timeout?` | launch a claude/codex **long task** in the background; returns a task_id at once (does not block the caller) |
+| `task_status` | `task_id` | poll task state (running/done/error/gone), instant |
+| `task_result` | `task_id`, `max_bytes?` | fetch full task output (readable after reconnect) |
+| `task_list` | — | list every background task on this sub (incl. past sessions, for resume-after-reconnect) |
+
+---
+
+## 🧩 Async tasks: long jobs don't block, survive disconnects
+
+`claude_analyze` / `codex_execute` are **synchronous** — the call blocks until the subagent finishes (up to 300s). Fine for short tasks, but two hard problems:
+
+1. **The host is pinned**: one remote AI job makes you wait up to 5 minutes, during which the MCP client can do nothing else.
+2. **Disconnect = loss**: the moment the SSH/MCP link drops, the running output is gone — you restart from scratch.
+
+The `task_start` family turns this into an **async job** — route long jobs to them:
+
+```mermaid
+sequenceDiagram
+  participant CC as Host · Claude Code
+  participant SRV as Sub · server.py
+  participant AI as claude / codex
+  CC->>SRV: task_start(agent, prompt)
+  SRV-->>CC: returns task_id at once (no block)
+  Note over SRV,AI: setsid background run, output to /tmp/infinite-subagent-tasks/
+  CC->>SRV: task_status(task_id) ← poll, instant
+  SRV-->>CC: running / done / error
+  Note over CC: host is free to do other work meanwhile
+  CC->>SRV: task_result(task_id) ← fetch full output
+  SRV-->>CC: on-disk output (readable after reconnect)
+```
+
+**Usage**: for any job that might run long, call `task_start(agent="claude"|"codex", prompt=...)` instead of `claude_analyze`/`codex_execute`. Take the `task_id`, do other things, poll `task_status` until `done`, then fetch with `task_result`.
+
+**Resume after reconnect**: output lives on the sub's disk (`/tmp/infinite-subagent-tasks/<task_id>/`), independent of the MCP connection. Even if SSH drops, reconnects, or you switch sessions, `task_list` still shows every past task and `task_result` still returns the output — long jobs no longer die on a dropped connection.
+
+> The synchronous tools (`claude_analyze`/`codex_execute`) stay as-is for "call and get the answer now" short tasks; route anything long through `task_*`.
 
 ---
 

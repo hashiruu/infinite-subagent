@@ -218,8 +218,44 @@ graph LR
 | `check_service` | `name` | systemd 服务状态 |
 | `restart_service` | `name` | 重启 systemd 服务 |
 | `docker_status` | — | Docker 容器状态（装了才有） |
-| `claude_analyze` | `prompt`, `workdir?` | **远程 Claude Code 子代理**（装了 claude 才有） |
-| `codex_execute` | `task`, `workdir?` | **远程 Codex 子代理**（装了 codex 才有） |
+| `claude_analyze` | `prompt`, `workdir?` | 远程 Claude Code 子代理·**同步**（装了 claude 才有） |
+| `codex_execute` | `task`, `workdir?` | 远程 Codex 子代理·**同步**（装了 codex 才有） |
+| `task_start` | `agent`, `prompt`, `workdir?`, `timeout?` | 后台启动一个 claude/codex **长任务**，立即返回 task_id（不阻塞调用方） |
+| `task_status` | `task_id` | 轮询任务状态（running/done/error/gone），秒回 |
+| `task_result` | `task_id`, `max_bytes?` | 拉取任务完整输出（断线重连后仍可读） |
+| `task_list` | — | 列出本机所有后台任务（含历史会话，用于断线续跑） |
+
+---
+
+## 🧩 异步任务：长任务不阻塞、断线可续
+
+`claude_analyze` / `codex_execute` 是**同步**的——调用即阻塞，直到子代理跑完（最长 300s）才返回。短任务够用，但有两个硬伤：
+
+1. **主机被钉死**：一次远程 AI 任务要干等最多 5 分钟，期间 MCP 客户端干不了别的。
+2. **断线即丢**：SSH/MCP 一断，正在跑的输出直接丢失，只能重头再来。
+
+`task_start` 系列改成**异步 job**——长任务交给它们：
+
+```mermaid
+sequenceDiagram
+  participant CC as 主机 · Claude Code
+  participant SRV as 子机 · server.py
+  participant AI as claude / codex
+  CC->>SRV: task_start(agent, prompt)
+  SRV-->>CC: 立即返回 task_id（不阻塞）
+  Note over SRV,AI: setsid 后台运行，输出落盘到 /tmp/infinite-subagent-tasks/
+  CC->>SRV: task_status(task_id) ← 轮询，秒回
+  SRV-->>CC: running / done / error
+  Note over CC: 这期间主机可自由做别的事
+  CC->>SRV: task_result(task_id) ← 取完整输出
+  SRV-->>CC: 落盘的输出（断线重连后仍可读）
+```
+
+**怎么用**：任何可能跑久的任务，用 `task_start(agent="claude"|"codex", prompt=...)` 替代 `claude_analyze`/`codex_execute`，拿到 `task_id` 后去忙别的，回头 `task_status` 轮询到 `done`，再 `task_result` 取结果。
+
+**断线续跑**：输出写在子机磁盘（`/tmp/infinite-subagent-tasks/<task_id>/`），与 MCP 连接无关。即使中途 SSH 断开、重连、甚至换了会话，`task_list` 仍能看到所有历史任务，`task_result` 仍能拉回结果——长任务不再因断线白跑。
+
+> 同步工具（`claude_analyze`/`codex_execute`）保留不动，适合「调一下就要结果」的短任务；长任务一律走 `task_*`。
 
 ---
 

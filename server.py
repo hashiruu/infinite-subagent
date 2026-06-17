@@ -27,6 +27,7 @@ import subprocess
 import shutil
 import platform
 import time
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -303,6 +304,181 @@ def tool_codex_execute(task: str, workdir: Optional[str] = None) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Async task model — fire-and-forget background agent jobs.
+# Solves two pain points of the synchronous claude_analyze/codex_execute:
+#   1) the caller is no longer blocked for up to 300s (task_start returns a
+#      task_id at once, so the host's MCP client is free to do other work);
+#   2) results land on disk under TASK_DIR, so a dropped SSH/MCP connection
+#      can still recover them later via task_result/task_list — long jobs
+#      survive reconnects instead of being lost mid-run.
+# ══════════════════════════════════════════════════════════════════════
+TASK_DIR = "/tmp/infinite-subagent-tasks"
+
+
+def _agent_cmd(agent, prompt):
+    """Return (base_command_string, extra_env_dict) for the given agent."""
+    agent = (agent or "").lower()
+    if agent == "claude":
+        env = {}
+        env_file = _find_fleet_env()
+        if env_file:
+            env.update(_load_env_file(env_file))
+        return f"claude -p {shlex.quote(prompt)} --output-format text", env
+    if agent == "codex":
+        return (f"codex exec --skip-git-repo-check "
+                f"--dangerously-bypass-approvals-and-sandbox {shlex.quote(prompt)}"), {}
+    raise ValueError(f"Unknown agent: {agent!r} (expected 'claude' or 'codex')")
+
+
+def _task_read_state(task_id):
+    """Read full state for a task from its on-disk files (meta + exit_code + output)."""
+    task_dir = Path(TASK_DIR) / task_id
+    meta_path = task_dir / "meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception:
+        meta = {}
+    pid = meta.get("pid")
+    exit_code = None
+    state = "unknown"
+    exit_path = task_dir / "exit_code"
+    out_path = task_dir / "out.log"
+    if exit_path.exists():
+        # exit_code file is the only trustworthy "done" signal (PID reuse
+        # makes kill -0 unreliable).
+        state = "done"
+        try:
+            exit_code = int(exit_path.read_text().strip())
+            if exit_code != 0:
+                state = "error"
+        except Exception:
+            exit_code = None
+    elif pid:
+        # process provably gone but no exit_code file -> killed/crashed
+        if "yes" in _run(f"kill -0 {int(pid)} 2>/dev/null && echo yes", 5)["stdout"]:
+            state = "running"
+        else:
+            state = "gone"
+    output_tail = ""
+    if out_path.exists():
+        try:
+            output_tail = out_path.read_text()[-4000:]
+        except Exception:
+            pass
+    start_ts = meta.get("start_ts")
+    elapsed = round(time.time() - start_ts, 1) if start_ts else None
+    return {
+        "task_id": task_id, "agent": meta.get("agent"),
+        "prompt_head": meta.get("prompt_head"), "workdir": meta.get("workdir"),
+        "start_ts": start_ts, "pid": pid, "state": state,
+        "exit_code": exit_code, "elapsed": elapsed, "output_tail": output_tail,
+    }
+
+
+def tool_task_start(agent, prompt, workdir=None, timeout=1800):
+    """Start a long agent task in the background; return immediately with task_id."""
+    agent_lc = (agent or "").lower()
+    if agent_lc == "claude" and not CLAUDE:
+        return {"error": "Claude Code not on this machine"}
+    if agent_lc == "codex" and not CODEX:
+        return {"error": "Codex not on this machine"}
+    try:
+        base, extra_env = _agent_cmd(agent_lc, prompt)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    workdir = workdir or HOME
+
+    task_id = f"{int(time.time())}-{os.urandom(3).hex()}"
+    task_dir = Path(TASK_DIR) / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    out_path = task_dir / "out.log"
+    exit_path = task_dir / "exit_code"
+    meta_path = task_dir / "meta.json"
+
+    # wrapper: cd, run agent, then record exit code to a file (the only
+    # reliable completion signal — PID reuse makes kill -0 untrustworthy).
+    wrapper = (f"cd {shlex.quote(workdir)} && {base} "
+               f"> {shlex.quote(str(out_path))} 2>&1 </dev/null; "
+               f"echo $? > {shlex.quote(str(exit_path))}")
+
+    # Persist extra env into a 0600 file and source it at launch, so secrets
+    # never appear in `ps` argv.
+    env_path = task_dir / "env"
+    env_path.write_text("\n".join(f"{k}={shlex.quote(v)}" for k, v in extra_env.items()) + "\n")
+    env_path.chmod(0o600)
+
+    # setsid makes the wrapper the leader of a new process group (PGID ==
+    # its PID), so the watchdog can kill the whole group; </dev/null + 2>&1
+    # detach stdio so _run returns immediately.
+    daemon = (f"set -a; . {shlex.quote(str(env_path))}; set +a; "
+              f"setsid bash -c {shlex.quote(wrapper)} </dev/null >/dev/null 2>&1 & echo $!")
+    r = _run(daemon, 10)
+    pid = None
+    try:
+        last = r["stdout"].strip().splitlines()[-1]
+        pid = int(last) if last else None
+    except (ValueError, IndexError):
+        pid = None
+
+    meta_path.write_text(json.dumps({
+        "agent": agent_lc, "prompt_head": prompt[:200], "prompt_len": len(prompt),
+        "workdir": workdir, "start_ts": int(time.time()), "pid": pid, "timeout": timeout,
+    }, ensure_ascii=False))
+
+    if pid and timeout and timeout > 0:
+        _run(f'nohup bash -c "sleep {int(timeout)}; kill -- -{pid} 2>/dev/null" '
+             f'</dev/null >/dev/null 2>&1 &', 5)
+
+    log(f"TASK_START: {task_id} agent={agent_lc} pid={pid}")
+    return {"task_id": task_id, "pid": pid, "status": "running",
+            "agent": agent_lc, "workdir": workdir}
+
+
+def tool_task_status(task_id):
+    s = _task_read_state(task_id)
+    if not s:
+        return {"error": f"Task not found: {task_id}"}
+    return {"task_id": s["task_id"], "state": s["state"], "exit_code": s["exit_code"],
+            "elapsed": s["elapsed"], "pid": s["pid"], "output_tail": s["output_tail"][-2000:]}
+
+
+def tool_task_result(task_id, max_bytes=100000):
+    s = _task_read_state(task_id)
+    if not s:
+        return {"error": f"Task not found: {task_id}"}
+    out_path = Path(TASK_DIR) / task_id / "out.log"
+    output = ""
+    if out_path.exists():
+        try:
+            raw = out_path.read_text()
+            output = raw[-max_bytes:] if len(raw) > max_bytes else raw
+        except Exception:
+            output = ""
+    return {"task_id": s["task_id"], "state": s["state"],
+            "exit_code": s["exit_code"], "output": output}
+
+
+def tool_task_list():
+    base = Path(TASK_DIR)
+    tasks = []
+    if base.exists():
+        for d in sorted(base.iterdir(), reverse=True):
+            if not d.is_dir():
+                continue
+            s = _task_read_state(d.name)
+            if s:
+                tasks.append({
+                    "task_id": s["task_id"], "agent": s["agent"], "state": s["state"],
+                    "start_ts": s["start_ts"], "prompt_head": s["prompt_head"],
+                    "elapsed": s["elapsed"],
+                })
+    return {"count": len(tasks), "tasks": tasks}
+
+
+# ══════════════════════════════════════════════════════════════════════
 # MCP Server
 # ══════════════════════════════════════════════════════════════════════
 
@@ -392,6 +568,48 @@ async def list_tools() -> list[types.Tool]:
             description=f"Get Docker container statuses on {HOSTNAME}" if DOCKER else f"Check Docker (not installed on {HOSTNAME})",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
+        types.Tool(
+            name="task_start",
+            description=f"Start a long agent (claude/codex) task on {HOSTNAME} in the BACKGROUND; returns immediately with a task_id instead of blocking the caller for up to 300s. Output is captured to disk so it survives SSH/MCP disconnects. Poll with task_status, fetch with task_result. Use this (not claude_analyze/codex_execute) for any job that may run long.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "enum": ["claude", "codex"], "description": "Which agent to run"},
+                    "prompt": {"type": "string", "description": "Prompt/task to execute"},
+                    "workdir": {"type": "string", "description": "Working directory (default: home dir)"},
+                    "timeout": {"type": "integer", "description": "Hard timeout in seconds (default 1800); a watchdog kills the task's process group after this", "default": 1800},
+                },
+                "required": ["agent", "prompt"],
+            },
+        ),
+        types.Tool(
+            name="task_status",
+            description=f"Poll the status of a background task on {HOSTNAME}. Returns state (running/done/error/gone), exit_code, elapsed seconds, and an output tail. Fast — safe to call in a loop.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task ID returned by task_start"},
+                },
+                "required": ["task_id"],
+            },
+        ),
+        types.Tool(
+            name="task_result",
+            description=f"Fetch the full output of a background task on {HOSTNAME} (from any session — survives SSH/MCP reconnect). Use after task_status reports done, or to read partial output mid-run.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task ID returned by task_start"},
+                    "max_bytes": {"type": "integer", "description": "Max bytes of output to return (default 100000)", "default": 100000},
+                },
+                "required": ["task_id"],
+            },
+        ),
+        types.Tool(
+            name="task_list",
+            description=f"List all background tasks on {HOSTNAME}, including ones started in previous MCP sessions (for resume-after-reconnect).",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
     ]
 
     if CLAUDE:
@@ -439,6 +657,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         # workdir omitted on purpose -> None -> defaults to home dir
         "claude_analyze":  lambda: tool_claude_analyze(arguments.get("prompt", ""), arguments.get("workdir")),
         "codex_execute":   lambda: tool_codex_execute(arguments.get("task", ""), arguments.get("workdir")),
+        "task_start":      lambda: tool_task_start(arguments.get("agent", ""), arguments.get("prompt", ""), arguments.get("workdir"), arguments.get("timeout", 1800)),
+        "task_status":     lambda: tool_task_status(arguments.get("task_id", "")),
+        "task_result":     lambda: tool_task_result(arguments.get("task_id", ""), arguments.get("max_bytes", 100000)),
+        "task_list":       lambda: tool_task_list(),
     }
 
     handler = handlers.get(name)
